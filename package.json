@@ -14,6 +14,8 @@
     "@google/generative-ai": "^0.24.1",
     "dotenv": "^17.4.2",
     "node-schedule": "^2.1.1",
-    "node-telegram-bot-api": "^0.67.0"
+    "node-telegram-bot-api": "^0.67.0",
+    "pm2": "^6.0.14",
+    "simple-git": "^3.36.0"
   }
 }
