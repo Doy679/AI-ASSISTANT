@@ -1,10 +1,20 @@
 #!/bin/bash
-# Kill any existing bot processes to avoid conflicts
-pkill -f "node bot.js" || true
 
-# Start the bot in the background
-# Output is saved to bot.log
-nohup node bot.js > bot.log 2>&1 &
+set -euo pipefail
 
-echo "🚀 Ron Assistant AI is starting in the background..."
-echo "📄 You can check the logs by typing: tail -f bot.log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOT_SCRIPT="$SCRIPT_DIR/bot.js"
+PID_FILE="$SCRIPT_DIR/bot.pid"
+LOG_FILE="$SCRIPT_DIR/bot.log"
+
+cd "$SCRIPT_DIR"
+
+# Kill any existing stray node bot.js processes reliably.
+pkill -9 -f "bot.js" || true
+
+# Start/Restart using pm2
+./node_modules/.bin/pm2 restart ron-ai || ./node_modules/.bin/pm2 start ecosystem.config.js
+
+echo "Ron Assistant AI is managed by pm2."
+./node_modules/.bin/pm2 list
+
