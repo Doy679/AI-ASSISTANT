@@ -40,8 +40,21 @@ const MODEL_CATALOG = {
     openai: 'gpt-4o',
     openai_mini: 'gpt-4o-mini',
     gemini: 'gemini-2.0-flash',
-    gemini_fallback: 'gemini-flash-latest'
+    gemini_fallback: 'gemini-1.5-flash',
+    gemini_lite: 'gemini-1.5-flash-8b'
 };
+
+bot.onText(/^\/status$/, async msg => {
+    const status = `
+🤖 **Bot Status Report**
+- Web Server: ✅ Online
+- OpenAI Key: ${process.env.OPENAI_API_KEY ? '✅ Detected' : '❌ Missing'}
+- Gemini Key: ${process.env.GEMINI_API_KEY ? '✅ Detected' : '❌ Missing'}
+- Environment: ${process.env.NODE_ENV || 'production'}
+- Knowledge Base: ${path.join(__dirname, 'vectors.json')}
+`.trim();
+    await bot.sendMessage(msg.chat.id, status);
+});
 
 const reminders = [
     { time: '0 7 * * *', msg: '🌅 Good Morning Boss! Exercise and bath time.' },
@@ -312,10 +325,11 @@ If grounding context is provided, treat it as the primary source of truth for pr
 
     let draft = '';
     const fallbacks = [
-        { type: 'gemini', model: MODEL_CATALOG.gemini_fallback }, // Gemini 1.5 Flash (Free)
-        { type: 'gemini', model: MODEL_CATALOG.gemini },          // Gemini 2.0 Flash (Free)
-        { type: 'openai', model: MODEL_CATALOG.openai_mini },    // OpenAI Mini (Paid)
-        { type: 'openai', model: MODEL_CATALOG.openai }          // OpenAI GPT-4o (Paid)
+        { type: 'gemini', model: MODEL_CATALOG.gemini_fallback }, // Gemini 1.5 Flash
+        { type: 'gemini', model: MODEL_CATALOG.gemini_lite },     // Gemini 1.5 Flash 8B (Highest quota)
+        { type: 'gemini', model: MODEL_CATALOG.gemini },          // Gemini 2.0 Flash
+        { type: 'openai', model: MODEL_CATALOG.openai_mini },    // OpenAI Mini
+        { type: 'openai', model: MODEL_CATALOG.openai }          // OpenAI GPT-4o
     ];
 
     for (const fb of fallbacks) {
