@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "start": "node bot.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -14,8 +15,10 @@
     "@google/generative-ai": "^0.24.1",
     "chromadb": "^3.4.3",
     "dotenv": "^17.4.2",
+    "express": "^5.2.1",
     "node-schedule": "^2.1.1",
     "node-telegram-bot-api": "^0.67.0",
+    "openai": "^6.34.0",
     "pm2": "^6.0.14",
     "simple-git": "^3.36.0"
   }

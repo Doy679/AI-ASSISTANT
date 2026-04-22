@@ -3,12 +3,22 @@ const fs = require('fs/promises');
 const path = require('path');
 const TelegramBot = require('node-telegram-bot-api');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const OpenAI = require('openai');
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 3000;
+
+// Health check endpoint for Render/Pinger
+app.get('/', (req, res) => res.send('Ron AI Assistant is active and running!'));
+app.listen(port, () => console.log(`Web server listening on port ${port}`));
+
 const schedule = require('node-schedule');
 const simpleGit = require('simple-git');
 const vectordb = require('./vectordb');
 
 const token = process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
 const geminiKey = process.env.GEMINI_API_KEY;
+const openaiKey = process.env.OPENAI_API_KEY;
 const workspaceRoot = path.resolve(process.env.WORKSPACE_ROOT || '/home/gonzales/Desktop/RON AI ASSISTANT');
 const memoryPath = path.join(__dirname, 'memory.json');
 const botName = process.env.ASSISTANT_NAME || 'Ron AI';
@@ -18,38 +28,20 @@ if (!token) {
     throw new Error('Missing TELEGRAM_TOKEN or TELEGRAM_BOT_TOKEN in environment.');
 }
 
-if (!geminiKey) {
-    throw new Error('Missing GEMINI_API_KEY in environment.');
-}
-
-const genAI = new GoogleGenerativeAI(geminiKey);
+const genAI = geminiKey ? new GoogleGenerativeAI(geminiKey) : null;
+const openai = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
 const bot = new TelegramBot(token, { polling: true });
 
 const MAX_HISTORY_MESSAGES = 12;
 const MAX_MEMORY_ENTRIES = 30;
 const MAX_RESPONSE_CHARS = 3500;
-const MAX_GROUNDED_FILES = 4;
-const MAX_FILE_BYTES = 120000;
-const GROUNDING_LINES_PER_MATCH = 2;
 
 const MODEL_CATALOG = {
-    fast: 'gemini-2.0-flash',
-    balanced: 'gemini-2.0-flash',
-    deep: 'gemini-2.0-flash'
+    openai: 'gpt-4o',
+    openai_mini: 'gpt-4o-mini',
+    gemini: 'gemini-2.0-flash',
+    gemini_fallback: 'gemini-flash-latest'
 };
-
-const repoRoot = __dirname;
-const git = simpleGit(repoRoot);
-const lastGroundingByChat = new Map();
-let trackedFilesCache = null;
-
-const STOPWORDS = new Set([
-    'the', 'and', 'for', 'are', 'with', 'that', 'this', 'from', 'have', 'what', 'when', 'where', 'which',
-    'would', 'could', 'should', 'about', 'your', 'ours', 'mine', 'their', 'there', 'here', 'into', 'make',
-    'more', 'just', 'lets', 'let', 'than', 'then', 'them', 'they', 'been', 'being', 'will', 'want', 'need',
-    'does', 'did', 'dont', 'how', 'why', 'who', 'our', 'you', 'can', 'not', 'but', 'too', 'its', 'it', 'a',
-    'an', 'of', 'to', 'in', 'on', 'is', 'be', 'as', 'at', 'or', 'if', 'we', 'us', 'i'
-]);
 
 const reminders = [
     { time: '0 7 * * *', msg: '🌅 Good Morning Boss! Exercise and bath time.' },
@@ -59,6 +51,35 @@ const reminders = [
     { time: '0 20 * * *', msg: '🥗 Dinner time!' },
     { time: '0 22 * * *', msg: '🌙 Sleep well, Boss.' }
 ];
+
+const FRONTEND_CHEAT_SHEET = [
+    "🚀 **MY FRONT-END TECH STACK: INTERVIEW CHEAT SHEET**\n\n**1. THE CORE FOUNDATION**\n• **HTML & CSS**: The essential building blocks of the web. HTML provides the semantic structure and meaning of the content, while CSS handles the initial visual presentation, layouts, and responsive behavior.",
+    "🚀 **MY FRONT-END TECH STACK: INTERVIEW CHEAT SHEET**\n\n**2. THE CORE FRAMEWORKS (Logic & Structure)**\n• **React**: My primary JavaScript library for building dynamic, interactive user interfaces. It allows me to create reusable UI components, making my codebase modular, easier to debug, and simpler to maintain as the project grows.\n• **Next.js**: A powerful React framework I use for production-ready applications. It provides built-in features like server-side rendering (SSR) and static site generation (SSG), which drastically improve website performance and SEO.",
+    "🚀 **MY FRONT-END TECH STACK: INTERVIEW CHEAT SHEET**\n\n**3. THE STYLING ARSENAL (Design & Efficiency)**\n• **Tailwind CSS**: My go-to utility-first CSS framework. It lets me rapidly build custom, sleek, and highly responsive designs directly within my markup.\n• **DaisyUI**: A component library plugin for Tailwind CSS. Speed of pre-built component classes combined with deep customization.\n• **Bootstrap**: A classic, robust component-based framework for quickly scaffolding standard layouts.",
+    "🚀 **MY FRONT-END TECH STACK: INTERVIEW CHEAT SHEET**\n\n**4. THE ANIMATION ENGINE (Motion & Interaction)**\n• **Framer Motion**: My preferred library for React. Fluid, physics-based animations and smooth page transitions.\n• **GSAP**: The industry standard for complex web animation. Timeline-based sequencing and complex scroll-triggered animations.",
+    "🚀 **MY FRONT-END TECH STACK: INTERVIEW CHEAT SHEET**\n\n**5. SUPPORTING TOOLS (Workflow & Deployment)**\n• **Git & GitHub**: Version control system to track changes and host repositories.\n• **Node.js**: The runtime environment for local development and package management.\n• **Webpack**: Module bundler for optimizing assets for the browser.\n• **VS Code**: My primary IDE and command center for efficient Linux development.",
+    "🚀 **MY FRONT-END TECH STACK: SUMMARY**\n\n\"I build my core applications using **React and Next.js** for strong performance. For styling, I use **Tailwind CSS and DaisyUI** to rapidly create modern interfaces, falling back on **Bootstrap** when needed. I bring the UI to life using **Framer Motion** for React transitions and **GSAP** for complex timelines, all built on a foundation of **HTML and CSS**. To support this, I use **VS Code** as my main editor, managing dependencies with **Node.js**, understanding asset bundling with **Webpack**, and maintaining strict version control with **Git and GitHub.**\""
+];
+
+async function sendDailyLearningReminder() {
+    const statePath = path.join(__dirname, 'learning_state.json');
+    let state = { lastIndex: 0 };
+    try {
+        const data = await fs.readFile(statePath, 'utf8');
+        state = JSON.parse(data);
+    } catch (e) {}
+
+    const index = state.lastIndex % FRONTEND_CHEAT_SHEET.length;
+    const msg = FRONTEND_CHEAT_SHEET[index];
+    
+    await bot.sendMessage(bossChatId, `📚 **DAILY SKILL LEARNING**\n\n${msg}`, { parse_mode: 'Markdown' });
+    
+    state.lastIndex = index + 1;
+    await fs.writeFile(statePath, JSON.stringify(state, null, 2));
+}
+
+// Schedule learning reminder for 9:00 AM daily
+schedule.scheduleJob('0 9 * * *', sendDailyLearningReminder);
 
 const CORE_SYSTEM_PROMPT = `
 You are ${botName}, the high-accuracy AI assistant for Ron Gonzales.
@@ -125,199 +146,11 @@ function isQuickReply(text) {
 }
 
 function pickPrimaryModel(userText) {
-    if (isComplexQuery(userText)) {
-        return MODEL_CATALOG.deep;
-    }
-
-    if (isQuickReply(userText)) {
-        return MODEL_CATALOG.fast;
-    }
-
-    return MODEL_CATALOG.balanced;
+    if (openai) return MODEL_CATALOG.openai;
+    return MODEL_CATALOG.gemini;
 }
 
-function tokenizeQuery(text) {
-    return normalizeText(text)
-        .toLowerCase()
-        .split(/[^a-z0-9._/-]+/)
-        .map(token => token.trim())
-        .filter(token => token.length >= 3 && !STOPWORDS.has(token));
-}
-
-function looksProjectSpecific(text) {
-    const lowered = text.toLowerCase();
-    if (/[/.][a-z0-9]/i.test(text)) return true;
-    return [
-        'bot',
-        'assistant',
-        'project',
-        'repo',
-        'repository',
-        'code',
-        'script',
-        'file',
-        'files',
-        'readme',
-        'memory',
-        'command',
-        'prompt',
-        'model',
-        'telegram',
-        'gemini',
-        'node',
-        'package',
-        'bug',
-        'fix',
-        'feature',
-        'implement',
-        'refactor'
-    ].some(keyword => lowered.includes(keyword));
-}
-
-async function getTrackedFiles() {
-    if (trackedFilesCache) return trackedFilesCache;
-
-    try {
-        const raw = await git.raw(['ls-files']);
-        trackedFilesCache = raw
-            .split('\n')
-            .map(line => line.trim())
-            .filter(Boolean)
-            .filter(file => !file.startsWith('node_modules/'));
-        return trackedFilesCache;
-    } catch (error) {
-        console.error('Failed to list tracked files:', error.message);
-        trackedFilesCache = [];
-        return trackedFilesCache;
-    }
-}
-
-async function safeReadRepoFile(relativePath) {
-    const absolutePath = path.join(repoRoot, relativePath);
-
-    try {
-        const stats = await fs.stat(absolutePath);
-        if (!stats.isFile() || stats.size > MAX_FILE_BYTES) {
-            return null;
-        }
-
-        return await fs.readFile(absolutePath, 'utf8');
-    } catch (error) {
-        return null;
-    }
-}
-
-function scoreFileMatch(relativePath, content, keywords) {
-    const loweredPath = relativePath.toLowerCase();
-    const loweredContent = content.toLowerCase();
-    let score = 0;
-    let matchCount = 0;
-
-    for (const keyword of keywords) {
-        if (loweredPath.includes(keyword)) {
-            score += 8;
-            matchCount += 1;
-        }
-
-        const pattern = new RegExp(keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
-        const matches = loweredContent.match(pattern);
-        if (matches) {
-            const weighted = Math.min(matches.length, 6);
-            score += weighted * 3;
-            matchCount += weighted;
-        }
-    }
-
-    return { score, matchCount };
-}
-
-function extractSnippet(relativePath, content, keywords) {
-    const lines = content.split('\n');
-    const ranges = [];
-
-    lines.forEach((line, index) => {
-        const loweredLine = line.toLowerCase();
-        if (keywords.some(keyword => loweredLine.includes(keyword))) {
-            const start = Math.max(0, index - GROUNDING_LINES_PER_MATCH);
-            const end = Math.min(lines.length - 1, index + GROUNDING_LINES_PER_MATCH);
-            ranges.push([start, end]);
-        }
-    });
-
-    if (!ranges.length) {
-        const fallback = lines.slice(0, Math.min(lines.length, 12));
-        return `FILE: ${relativePath}\n${fallback.map((line, index) => `${index + 1}: ${line}`).join('\n')}`;
-    }
-
-    const merged = [];
-    for (const [start, end] of ranges.slice(0, 4)) {
-        const last = merged[merged.length - 1];
-        if (last && start <= last[1] + 1) {
-            last[1] = Math.max(last[1], end);
-        } else {
-            merged.push([start, end]);
-        }
-    }
-
-    const snippetParts = merged.slice(0, 2).map(([start, end]) => {
-        const chunk = lines
-            .slice(start, end + 1)
-            .map((line, offset) => `${start + offset + 1}: ${line}`)
-            .join('\n');
-        return chunk;
-    });
-
-    return `FILE: ${relativePath}\n${snippetParts.join('\n...\n')}`;
-}
-
-async function gatherGroundingContext(userText) {
-    if (!looksProjectSpecific(userText) || isQuickReply(userText)) {
-        return { summary: 'No local project grounding used.', files: [] };
-    }
-
-    const keywords = tokenizeQuery(userText).slice(0, 8);
-    if (!keywords.length) {
-        return { summary: 'No local project grounding used.', files: [] };
-    }
-
-    const trackedFiles = await getTrackedFiles();
-    const candidates = [];
-
-    for (const relativePath of trackedFiles) {
-        const content = await safeReadRepoFile(relativePath);
-        if (!content) continue;
-
-        const { score, matchCount } = scoreFileMatch(relativePath, content, keywords);
-        if (score <= 0) continue;
-
-        candidates.push({
-            relativePath,
-            score,
-            matchCount,
-            snippet: extractSnippet(relativePath, content, keywords)
-        });
-    }
-
-    candidates.sort((a, b) => b.score - a.score || b.matchCount - a.matchCount || a.relativePath.localeCompare(b.relativePath));
-    const topMatches = candidates.slice(0, MAX_GROUNDED_FILES);
-
-    if (!topMatches.length) {
-        return { summary: 'No relevant local project files matched this request.', files: [] };
-    }
-
-    const summary = topMatches
-        .map(match => `${match.relativePath} (score ${match.score})`)
-        .join(', ');
-
-    return {
-        summary,
-        files: topMatches.map(match => ({
-            path: match.relativePath,
-            score: match.score,
-            snippet: match.snippet
-        }))
-    };
-}
+const lastGroundingByChat = new Map();
 
 async function readMemory() {
     try {
@@ -378,15 +211,42 @@ function formatHistory(entries) {
         .join('\n');
 }
 
-async function generateWithModel(modelName, prompt) {
+async function generateWithOpenAI(modelName, prompt, history = []) {
+    if (!openai) throw new Error('OpenAI client not initialized');
+
+    const messages = [
+        { role: 'system', content: CORE_SYSTEM_PROMPT },
+        ...history.map(h => ({ 
+            role: h.role === 'assistant' ? 'assistant' : 'user', 
+            content: h.text 
+        })),
+        { role: 'user', content: prompt }
+    ];
+
+    const response = await openai.chat.completions.create({
+        model: modelName,
+        messages: messages,
+        temperature: 0.3,
+        max_tokens: 900
+    });
+
+    return normalizeText(response.choices[0]?.message?.content);
+}
+
+async function generateWithGemini(modelName, prompt) {
+    if (!genAI) throw new Error('Gemini client not initialized');
+
     const model = genAI.getGenerativeModel({
         model: modelName,
-        systemInstruction: CORE_SYSTEM_PROMPT,
         tools: [{ googleSearch: {} }]
     });
 
     const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        contents: [
+            { role: 'user', parts: [{ text: CORE_SYSTEM_PROMPT }] },
+            { role: 'model', parts: [{ text: "Understood. I will act as your professional engineering and productivity partner." }] },
+            { role: 'user', parts: [{ text: prompt }] }
+        ],
         generationConfig: {
             temperature: 0.3,
             topP: 0.9,
@@ -404,14 +264,16 @@ async function buildAccurateReply(chatId, userText) {
     const historyBlock = formatHistory(history);
     const primaryModel = pickPrimaryModel(userText);
     
-    // Use Vector DB for codebase and memory grounding
-    const codebaseQuery = await vectordb.queryDocuments('codebase', userText, 3);
-    const memoryQuery = await vectordb.queryDocuments('memory', userText, 3);
-    
-    const codebaseChunks = codebaseQuery.documents[0] || [];
-    const memoryChunks = memoryQuery.documents[0] || [];
-    
-    const groundingBlock = `
+    let groundingBlock = "No specific context available (search temporarily unavailable).";
+    try {
+        // Use Vector DB for codebase and memory grounding
+        const codebaseQuery = await vectordb.queryDocuments('codebase', userText, 3);
+        const memoryQuery = await vectordb.queryDocuments('memory', userText, 3);
+        
+        const codebaseChunks = codebaseQuery.documents[0] || [];
+        const memoryChunks = memoryQuery.documents[0] || [];
+        
+        groundingBlock = `
 --- CODEBASE CONTEXT ---
 ${codebaseChunks.length ? codebaseChunks.join('\n\n---\n\n') : 'No specific codebase context found.'}
 
@@ -419,15 +281,18 @@ ${codebaseChunks.length ? codebaseChunks.join('\n\n---\n\n') : 'No specific code
 ${memoryChunks.length ? memoryChunks.join('\n\n---\n\n') : 'No specific memory context found.'}
 `.trim();
 
-    // Store for /sources command
-    lastGroundingByChat.set(String(chatId), {
-        summary: `Vector DB: ${codebaseChunks.length} codebase, ${memoryChunks.length} memory chunks`,
-        files: codebaseChunks.map((chunk, i) => ({
-            path: codebaseQuery.metadatas[0][i]?.path || 'codebase-chunk',
-            score: 100,
-            snippet: chunk
-        }))
-    });
+        // Store for /sources command
+        lastGroundingByChat.set(String(chatId), {
+            summary: `Vector DB: ${codebaseChunks.length} codebase, ${memoryChunks.length} memory chunks`,
+            files: codebaseChunks.map((chunk, i) => ({
+                path: codebaseQuery.metadatas[0][i]?.path || 'codebase-chunk',
+                score: 100,
+                snippet: chunk
+            }))
+        });
+    } catch (searchError) {
+        console.error('Vector DB search failed, proceeding without grounding:', searchError.message);
+    }
 
     const answerPrompt = `
 Recent conversation:
@@ -444,25 +309,32 @@ Provide the best direct response to the latest user request.
 Use recent history only if it materially helps.
 If details are missing and guessing would reduce accuracy, ask one concise clarifying question.
 If grounding context is provided, treat it as the primary source of truth for project-specific claims.
-You also have access to Google Search via tools if you need up-to-date external information.
 `.trim();
 
     let draft = '';
-    const modelFallbacks = [primaryModel, MODEL_CATALOG.balanced, MODEL_CATALOG.fast, MODEL_CATALOG.deep]
-        .filter((name, index, list) => list.indexOf(name) === index);
+    const fallbacks = [
+        { type: 'openai', model: MODEL_CATALOG.openai },
+        { type: 'openai', model: MODEL_CATALOG.openai_mini },
+        { type: 'gemini', model: MODEL_CATALOG.gemini },
+        { type: 'gemini', model: MODEL_CATALOG.gemini_fallback }
+    ];
 
-    for (const modelName of modelFallbacks) {
+    for (const fb of fallbacks) {
         try {
-            console.log(`Generating draft with ${modelName}`);
-            draft = await generateWithModel(modelName, answerPrompt);
+            console.log(`Generating draft with ${fb.model} (${fb.type})`);
+            if (fb.type === 'openai' && openai) {
+                draft = await generateWithOpenAI(fb.model, answerPrompt, history);
+            } else if (fb.type === 'gemini' && genAI) {
+                draft = await generateWithGemini(fb.model, answerPrompt);
+            }
             if (draft) break;
         } catch (error) {
-            console.error(`Model ${modelName} failed:`, error.message);
+            console.error(`${fb.type} model ${fb.model} failed:`, error.message);
         }
     }
 
     if (!draft) {
-        return 'Boss, I could not produce a reliable answer right now. Please try again in a moment.';
+        return 'Boss, I am currently experiencing connection issues with both AI engines. Please wait a moment and try again.';
     }
 
     return truncate(draft, MAX_RESPONSE_CHARS);
@@ -542,6 +414,8 @@ bot.onText(/^\/sources$/, async msg => {
 
 async function autoPushUpdate() {
     try {
+        const repoRoot = __dirname;
+        const git = simpleGit(repoRoot);
         const heartbeatFile = path.join(repoRoot, 'heartbeat.txt');
         const timestamp = new Date().toISOString();
         await fs.writeFile(heartbeatFile, `Last heartbeat: ${timestamp}\n`, 'utf8');
@@ -700,4 +574,4 @@ bot.on('polling_error', error => {
 });
 
 console.log(`${botName} is online.`);
-module.exports = { buildAccurateReply, generateWithModel };
+module.exports = { buildAccurateReply, generateWithOpenAI, generateWithGemini, sendDailyLearningReminder };

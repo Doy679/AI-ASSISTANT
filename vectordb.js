@@ -1,97 +1,133 @@
-const { ChromaClient } = require('chromadb');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const fs = require('fs/promises');
+const path = require('path');
+const OpenAI = require("openai");
 require('dotenv').config();
 
-let client;
-let embeddingFunction;
+const VECTORS_FILE = path.join(__dirname, 'vectors.json');
+let db = { collections: {} };
+let openai;
 
 /**
- * Custom embedding function using Gemini's text-embedding-004 model.
+ * Initializes the OpenAI client.
  */
-class GeminiEmbeddingFunction {
-    constructor(apiKey) {
-        this.genAI = new GoogleGenerativeAI(apiKey);
-        this.model = this.genAI.getGenerativeModel({ model: "text-embedding-004" });
-    }
-
-    async generate(texts) {
-        try {
-            const result = await this.model.batchEmbedContents({
-                requests: texts.map((text) => ({
-                    content: { role: "user", parts: [{ text }] },
-                })),
-            });
-            return result.embeddings.map((e) => e.values);
-        } catch (error) {
-            console.error('Error generating embeddings:', error);
-            throw error;
+function getOpenAIClient() {
+    if (!openai) {
+        if (!process.env.OPENAI_API_KEY) {
+            throw new Error('OPENAI_API_KEY is not defined in environment variables');
         }
+        openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    }
+    return openai;
+}
+
+/**
+ * Custom embedding generation using OpenAI's text-embedding-3-small model.
+ */
+async function generateEmbeddings(texts) {
+    const client = getOpenAIClient();
+    try {
+        const response = await client.embeddings.create({
+            model: "text-embedding-3-small",
+            input: texts,
+            encoding_format: "float",
+        });
+        return response.data.map(item => item.embedding);
+    } catch (error) {
+        console.error('Error generating OpenAI embeddings:', error);
+        throw error;
     }
 }
 
 /**
- * Initializes the Vector DB client and embedding function.
+ * Similarity calculation (Dot Product).
+ * text-embedding-3-small embeddings are normalized, so dot product is equivalent to cosine similarity.
+ */
+function dotProduct(vecA, vecB) {
+    let product = 0;
+    for (let i = 0; i < vecA.length; i++) {
+        product += vecA[i] * vecB[i];
+    }
+    return product;
+}
+
+/**
+ * Initializes the local JSON Vector DB.
  */
 async function initDB() {
-    const host = process.env.CHROMA_HOST || "http://localhost";
-    const port = parseInt(process.env.CHROMA_PORT || "8000");
-    
-    client = new ChromaClient({
-        host: host,
-        port: port
-    });
-
-    if (!process.env.GEMINI_API_KEY) {
-        throw new Error('GEMINI_API_KEY is not defined in environment variables');
-    }
-
-    embeddingFunction = new GeminiEmbeddingFunction(process.env.GEMINI_API_KEY);
-
-    // Heartbeat to verify connection
     try {
-        await client.heartbeat();
+        const data = await fs.readFile(VECTORS_FILE, 'utf8');
+        db = JSON.parse(data);
     } catch (error) {
-        console.warn('⚠️ Could not connect to ChromaDB server. Ensure it is running at', host + ':' + port);
-        // We don't throw here to allow the test to fail specifically on operations if needed, 
-        // but it's good to know.
+        if (error.code !== 'ENOENT') {
+            console.error('Error loading vectors.json:', error);
+        }
+        db = { collections: {} };
     }
+    return db;
+}
 
-    return client;
+/**
+ * Saves the DB to disk.
+ */
+async function saveDB() {
+    await fs.writeFile(VECTORS_FILE, JSON.stringify(db, null, 2), 'utf8');
 }
 
 /**
  * Adds a document to a collection.
  */
 async function addDocument(collectionName, text, metadata, id) {
-    if (!client) await initDB();
-    
-    const collection = await client.getOrCreateCollection({
-        name: collectionName,
-        embeddingFunction: embeddingFunction
-    });
+    if (!db.collections[collectionName]) {
+        db.collections[collectionName] = [];
+    }
 
-    await collection.add({
-        ids: [id],
-        metadatas: [metadata],
-        documents: [text]
-    });
+    const embeddings = await generateEmbeddings([text]);
+    const embedding = embeddings[0];
+
+    // Update or add
+    const index = db.collections[collectionName].findIndex(doc => doc.id === id);
+    const newDoc = { id, text, metadata, embedding };
+
+    if (index !== -1) {
+        db.collections[collectionName][index] = newDoc;
+    } else {
+        db.collections[collectionName].push(newDoc);
+    }
+
+    await saveDB();
 }
 
 /**
  * Queries documents from a collection.
  */
 async function queryDocuments(collectionName, queryText, nResults = 5) {
-    if (!client) await initDB();
+    if (!db.collections[collectionName] || db.collections[collectionName].length === 0) {
+        return { ids: [[]], metadatas: [[]], documents: [[]], distances: [[]] };
+    }
 
-    const collection = await client.getOrCreateCollection({
-        name: collectionName,
-        embeddingFunction: embeddingFunction
+    const queryEmbeddings = await generateEmbeddings([queryText]);
+    const queryVector = queryEmbeddings[0];
+
+    const results = db.collections[collectionName].map(doc => {
+        // Handle dimension mismatch if old embeddings exist
+        if (doc.embedding.length !== queryVector.length) {
+            return { ...doc, score: -1 }; // Skip incompatible embeddings
+        }
+        const score = dotProduct(queryVector, doc.embedding);
+        return { ...doc, score };
     });
 
-    return await collection.query({
-        queryTexts: [queryText],
-        nResults: nResults
-    });
+    // Sort by descending similarity
+    results.sort((a, b) => b.score - a.score);
+
+    const topResults = results.slice(0, nResults);
+
+    return {
+        ids: [topResults.map(r => r.id)],
+        metadatas: [topResults.map(r => r.metadata)],
+        documents: [topResults.map(r => r.text)],
+        distances: [topResults.map(r => 1 - r.score)] // Convert similarity to distance
+    };
 }
 
 module.exports = { initDB, addDocument, queryDocuments };
