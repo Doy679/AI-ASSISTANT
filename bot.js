@@ -146,8 +146,7 @@ function isQuickReply(text) {
 }
 
 function pickPrimaryModel(userText) {
-    if (openai) return MODEL_CATALOG.openai;
-    return MODEL_CATALOG.gemini;
+    return MODEL_CATALOG.gemini_fallback; // Default to Gemini 1.5 Flash (most stable free tier)
 }
 
 const lastGroundingByChat = new Map();
@@ -313,10 +312,10 @@ If grounding context is provided, treat it as the primary source of truth for pr
 
     let draft = '';
     const fallbacks = [
-        { type: 'openai', model: MODEL_CATALOG.openai },
-        { type: 'openai', model: MODEL_CATALOG.openai_mini },
-        { type: 'gemini', model: MODEL_CATALOG.gemini },
-        { type: 'gemini', model: MODEL_CATALOG.gemini_fallback }
+        { type: 'gemini', model: MODEL_CATALOG.gemini_fallback }, // Gemini 1.5 Flash (Free)
+        { type: 'gemini', model: MODEL_CATALOG.gemini },          // Gemini 2.0 Flash (Free)
+        { type: 'openai', model: MODEL_CATALOG.openai_mini },    // OpenAI Mini (Paid)
+        { type: 'openai', model: MODEL_CATALOG.openai }          // OpenAI GPT-4o (Paid)
     ];
 
     for (const fb of fallbacks) {

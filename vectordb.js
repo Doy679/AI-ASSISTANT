@@ -1,46 +1,41 @@
 const fs = require('fs/promises');
 const path = require('path');
-const OpenAI = require("openai");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 require('dotenv').config();
 
 const VECTORS_FILE = path.join(__dirname, 'vectors.json');
 let db = { collections: {} };
-let openai;
+let genAI;
+let embeddingModel;
 
 /**
- * Initializes the OpenAI client.
- */
-function getOpenAIClient() {
-    if (!openai) {
-        if (!process.env.OPENAI_API_KEY) {
-            throw new Error('OPENAI_API_KEY is not defined in environment variables');
-        }
-        openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    }
-    return openai;
-}
-
-/**
- * Custom embedding generation using OpenAI's text-embedding-3-small model.
+ * Custom embedding generation using Gemini's gemini-embedding-001 model (Free Tier).
  */
 async function generateEmbeddings(texts) {
-    const client = getOpenAIClient();
+    if (!genAI) {
+        if (!process.env.GEMINI_API_KEY) {
+            throw new Error('GEMINI_API_KEY is not defined in environment variables');
+        }
+        genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+        embeddingModel = genAI.getGenerativeModel({ model: "gemini-embedding-001" });
+    }
+
     try {
-        const response = await client.embeddings.create({
-            model: "text-embedding-3-small",
-            input: texts,
-            encoding_format: "float",
+        const result = await embeddingModel.batchEmbedContents({
+            requests: texts.map((text) => ({
+                content: { role: "user", parts: [{ text }] },
+            })),
         });
-        return response.data.map(item => item.embedding);
+        return result.embeddings.map((e) => e.values);
     } catch (error) {
-        console.error('Error generating OpenAI embeddings:', error);
+        console.error('Error generating Gemini embeddings:', error);
         throw error;
     }
 }
 
 /**
  * Similarity calculation (Dot Product).
- * text-embedding-3-small embeddings are normalized, so dot product is equivalent to cosine similarity.
+ * gemini-embedding-001 embeddings are normalized, so dot product is equivalent to cosine similarity.
  */
 function dotProduct(vecA, vecB) {
     let product = 0;
@@ -110,8 +105,8 @@ async function queryDocuments(collectionName, queryText, nResults = 5) {
 
     const results = db.collections[collectionName].map(doc => {
         // Handle dimension mismatch if old embeddings exist
-        if (doc.embedding.length !== queryVector.length) {
-            return { ...doc, score: -1 }; // Skip incompatible embeddings
+        if (!doc.embedding || doc.embedding.length !== queryVector.length) {
+            return { ...doc, score: -1 }; 
         }
         const score = dotProduct(queryVector, doc.embedding);
         return { ...doc, score };
@@ -126,7 +121,7 @@ async function queryDocuments(collectionName, queryText, nResults = 5) {
         ids: [topResults.map(r => r.id)],
         metadatas: [topResults.map(r => r.metadata)],
         documents: [topResults.map(r => r.text)],
-        distances: [topResults.map(r => 1 - r.score)] // Convert similarity to distance
+        distances: [topResults.map(r => 1 - r.score)] 
     };
 }
 
