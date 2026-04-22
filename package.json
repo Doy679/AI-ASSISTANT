@@ -12,6 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "chromadb": "^3.4.3",
     "dotenv": "^17.4.2",
     "node-schedule": "^2.1.1",
     "node-telegram-bot-api": "^0.67.0",
