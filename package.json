@@ -1,8 +1,8 @@
 {
   "name": "my-ai-assistant",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "1.0.1",
+  "description": "Ron AI Assistant with 24/7 hosting support",
+  "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
     "test": "echo \"Error: no test specified\" && exit 1"
