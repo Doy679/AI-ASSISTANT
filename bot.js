@@ -5,6 +5,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const schedule = require('node-schedule');
 const simpleGit = require('simple-git');
+const vectordb = require('./vectordb');
 
 const token = process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
 const geminiKey = process.env.GEMINI_API_KEY;
@@ -380,7 +381,8 @@ function formatHistory(entries) {
 async function generateWithModel(modelName, prompt) {
     const model = genAI.getGenerativeModel({
         model: modelName,
-        systemInstruction: CORE_SYSTEM_PROMPT
+        systemInstruction: CORE_SYSTEM_PROMPT,
+        tools: [{ googleSearch: {} }]
     });
 
     const result = await model.generateContent({
@@ -401,11 +403,31 @@ async function buildAccurateReply(chatId, userText) {
     const history = await getRecentHistory(chatId);
     const historyBlock = formatHistory(history);
     const primaryModel = pickPrimaryModel(userText);
-    const grounding = await gatherGroundingContext(userText);
-    lastGroundingByChat.set(String(chatId), grounding);
-    const groundingBlock = grounding.files.length
-        ? grounding.files.map(file => file.snippet).join('\n\n---\n\n')
-        : grounding.summary;
+    
+    // Use Vector DB for codebase and memory grounding
+    const codebaseQuery = await vectordb.queryDocuments('codebase', userText, 3);
+    const memoryQuery = await vectordb.queryDocuments('memory', userText, 3);
+    
+    const codebaseChunks = codebaseQuery.documents[0] || [];
+    const memoryChunks = memoryQuery.documents[0] || [];
+    
+    const groundingBlock = `
+--- CODEBASE CONTEXT ---
+${codebaseChunks.length ? codebaseChunks.join('\n\n---\n\n') : 'No specific codebase context found.'}
+
+--- MEMORY CONTEXT ---
+${memoryChunks.length ? memoryChunks.join('\n\n---\n\n') : 'No specific memory context found.'}
+`.trim();
+
+    // Store for /sources command
+    lastGroundingByChat.set(String(chatId), {
+        summary: `Vector DB: ${codebaseChunks.length} codebase, ${memoryChunks.length} memory chunks`,
+        files: codebaseChunks.map((chunk, i) => ({
+            path: codebaseQuery.metadatas[0][i]?.path || 'codebase-chunk',
+            score: 100,
+            snippet: chunk
+        }))
+    });
 
     const answerPrompt = `
 Recent conversation:
@@ -414,15 +436,15 @@ ${historyBlock}
 Latest user request:
 ${userText}
 
-Local project grounding:
+Project & Memory Grounding:
 ${groundingBlock}
 
 Task:
 Provide the best direct response to the latest user request.
 Use recent history only if it materially helps.
 If details are missing and guessing would reduce accuracy, ask one concise clarifying question.
-If local project grounding is provided, treat it as the primary source of truth for project-specific claims.
-Do not claim that a file contains something unless it appears in the grounding.
+If grounding context is provided, treat it as the primary source of truth for project-specific claims.
+You also have access to Google Search via tools if you need up-to-date external information.
 `.trim();
 
     let draft = '';
@@ -678,3 +700,4 @@ bot.on('polling_error', error => {
 });
 
 console.log(`${botName} is online.`);
+module.exports = { buildAccurateReply, generateWithModel };
